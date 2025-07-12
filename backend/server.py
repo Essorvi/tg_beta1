@@ -33,7 +33,7 @@ REQUIRED_CHANNEL = os.environ['REQUIRED_CHANNEL']
 BOT_USERNAME = os.environ.get('BOT_USERNAME', 'search1_test_bot')
 
 # Create the main app
-app = FastAPI(title="Usersbox Telegram Bot API")
+app = FastAPI(title="УЗРИ - Telegram Bot API")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -44,7 +44,7 @@ class User(BaseModel):
     username: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    attempts_remaining: int = 0  # Changed to 0 by default
+    attempts_remaining: int = 0
     referred_by: Optional[int] = None
     referral_code: str
     total_referrals: int = 0
@@ -56,22 +56,18 @@ class User(BaseModel):
 class Search(BaseModel):
     user_id: int
     query: str
-    search_type: str  # phone, email, name, etc.
+    search_type: str
     results: Dict[str, Any]
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     attempt_used: bool = True
     success: bool = True
+    cost: float = 0.0
 
 class Referral(BaseModel):
     referrer_id: int
     referred_id: int
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     attempt_given: bool = True
-
-class TelegramMessage(BaseModel):
-    chat_id: int
-    text: str
-    parse_mode: str = "Markdown"
 
 # Helper Functions
 def generate_referral_code(telegram_id: int) -> str:
@@ -92,71 +88,109 @@ def detect_search_type(query: str) -> str:
     
     for pattern in phone_patterns:
         if re.match(pattern, query.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')):
-            return "phone"
+            return "📱 Телефон"
     
     # Email pattern
     if re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', query):
-        return "email"
+        return "📧 Email"
     
     # Car number pattern (Russian)
     if re.match(r'^[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}\d{2,3}$', query.upper().replace(' ', '')):
-        return "car_number"
+        return "🚗 Автомобиль"
     
     # Username/nickname pattern
     if query.startswith('@') or re.match(r'^[a-zA-Z0-9_]+$', query):
-        return "username"
+        return "🆔 Никнейм"
     
     # IP address pattern
     if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', query):
-        return "ip_address"
+        return "🌐 IP-адрес"
     
-    # Address pattern (contains typical address words)
+    # Address pattern
     address_keywords = ['улица', 'ул', 'проспект', 'пр', 'переулок', 'пер', 'дом', 'д', 'квартира', 'кв']
     if any(keyword in query.lower() for keyword in address_keywords):
-        return "address"
+        return "🏠 Адрес"
     
-    # Name pattern (2-3 words, Cyrillic or Latin)
+    # Name pattern
     words = query.split()
     if 2 <= len(words) <= 3 and all(re.match(r'^[а-яА-ЯёЁa-zA-Z]+$', word) for word in words):
-        return "name"
+        return "👤 ФИО"
     
-    # Default to general search
-    return "general"
+    return "🔍 Общий поиск"
+
+def create_main_menu():
+    """Create main menu keyboard"""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🔍 Поиск", "callback_data": "menu_search"},
+                {"text": "👤 Профиль", "callback_data": "menu_profile"}
+            ],
+            [
+                {"text": "💡 Проверка (бесплатно)", "callback_data": "menu_check"},
+                {"text": "📊 Базы данных", "callback_data": "menu_sources"}
+            ],
+            [
+                {"text": "🔗 Реферальная программа", "callback_data": "menu_referral"},
+                {"text": "❓ Помощь", "callback_data": "menu_help"}
+            ]
+        ]
+    }
+
+def create_back_keyboard():
+    """Create back button keyboard"""
+    return {
+        "inline_keyboard": [
+            [{"text": "◀️ Назад в меню", "callback_data": "back_to_menu"}]
+        ]
+    }
+
+def create_subscription_keyboard():
+    """Create subscription check keyboard"""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📢 Подписаться на канал", "url": "https://t.me/uzri_sebya"}
+            ],
+            [
+                {"text": "✅ Проверить подписку", "callback_data": "check_subscription"}
+            ]
+        ]
+    }
+
+async def usersbox_request(endpoint: str, params: Dict = None) -> Dict:
+    """Make request to usersbox API"""
+    headers = {"Authorization": USERSBOX_TOKEN}
+    url = f"{USERSBOX_BASE_URL}{endpoint}"
+    
+    try:
+        response = requests.get(url, headers=headers, params=params or {}, timeout=30)
+        return response.json()
+    except Exception as e:
+        logging.error(f"Usersbox API error: {e}")
+        return {"status": "error", "error": {"message": str(e)}}
 
 def format_search_results(results: Dict[str, Any], query: str, search_type: str) -> str:
-    """Format usersbox API results for Telegram with enhanced display"""
+    """Format usersbox API results for Telegram"""
     if results.get('status') == 'error':
-        return f"❌ *Ошибка поиска:* {results.get('error', {}).get('message', 'Неизвестная ошибка')}"
+        return f"❌ *Ошибка:* {results.get('error', {}).get('message', 'Неизвестная ошибка')}"
 
     data = results.get('data', {})
     total_count = data.get('count', 0)
     
     if total_count == 0:
-        return f"🔍 *Поиск по запросу:* `{query}`\n\n❌ *Результатов не найдено*\n\n💡 *Попробуйте:*\n• Другой формат номера\n• Полное имя и фамилию\n• Проверить правописание"
-
-    # Create search type emoji mapping
-    type_emojis = {
-        "phone": "📱",
-        "email": "📧", 
-        "name": "👤",
-        "car_number": "🚗",
-        "username": "🆔",
-        "ip_address": "🌐",
-        "address": "🏠",
-        "general": "🔍"
-    }
+        return f"🔍 *Поиск:* `{query}`\n{search_type}\n\n❌ *Результатов не найдено*\n\n💡 *Попробуйте изменить формат запроса*"
     
-    search_emoji = type_emojis.get(search_type, "🔍")
-    
-    formatted_text = f"{search_emoji} *Поиск по запросу:* `{query}`\n"
-    formatted_text += f"🔎 *Тип поиска:* {search_type}\n\n"
-    formatted_text += f"📊 *Всего найдено:* {total_count} записей\n\n"
+    formatted_text = f"🎯 *РЕЗУЛЬТАТЫ ПОИСКА*\n\n"
+    formatted_text += f"🔍 *Запрос:* `{query}`\n"
+    formatted_text += f"📂 *Тип:* {search_type}\n"
+    formatted_text += f"📊 *Найдено:* {total_count} записей\n\n"
 
-    # Format search results from /search endpoint
+    # Format search results
     if 'items' in data and isinstance(data['items'], list):
-        formatted_text += "📋 *Результаты поиска:*\n\n"
+        formatted_text += "📋 *ДАННЫЕ ИЗ БАЗ:*\n\n"
         
-        for i, source_data in enumerate(data['items'][:5], 1):  # Limit to 5 sources
+        for i, source_data in enumerate(data['items'][:5], 1):
             if 'source' in source_data and 'hits' in source_data:
                 source = source_data['source']
                 hits = source_data['hits']
@@ -164,80 +198,86 @@ def format_search_results(results: Dict[str, Any], query: str, search_type: str)
                 
                 # Database name translation
                 db_names = {
-                    'yandex': 'Яндекс',
-                    'avito': 'Авито',
-                    'vk': 'ВКонтакте',
-                    'ok': 'Одноклассники',
-                    'delivery_club': 'Delivery Club',
-                    'cdek': 'СДЭК'
+                    'yandex': '🟡 Яндекс',
+                    'avito': '🟢 Авито',
+                    'vk': '🔵 ВКонтакте',
+                    'ok': '🟠 Одноклассники',
+                    'delivery_club': '🍕 Delivery Club',
+                    'cdek': '📦 СДЭК'
                 }
                 
-                db_display = db_names.get(source.get('database', ''), source.get('database', 'N/A'))
+                db_display = db_names.get(source.get('database', ''), f"📊 {source.get('database', 'N/A')}")
                 
-                formatted_text += f"*{i}. База данных:* {db_display}\n"
-                formatted_text += f" *Коллекция:* {source.get('collection', 'N/A')}\n"
-                formatted_text += f" *Найдено записей:* {hits_count}\n"
+                formatted_text += f"*{i}. {db_display}*\n"
+                formatted_text += f"📁 База: {source.get('collection', 'N/A')}\n"
+                formatted_text += f"🔢 Записей: {hits_count}\n"
 
-                # Format individual items if available
+                # Format individual items
                 if 'items' in hits and hits['items']:
-                    formatted_text += " *Данные:*\n"
-                    for item in hits['items'][:2]:  # Show first 2 items per source
+                    formatted_text += "💾 *Данные:*\n"
+                    for item in hits['items'][:2]:
                         for key, value in item.items():
                             if key.startswith('_'):
-                                continue  # Skip internal fields
+                                continue
                             
                             if key in ['phone', 'телефон', 'tel', 'mobile']:
-                                formatted_text += f" 📞 Телефон: `{value}`\n"
+                                formatted_text += f"📞 {value}\n"
                             elif key in ['email', 'почта', 'mail', 'e_mail']:
-                                formatted_text += f" 📧 Email: `{value}`\n"
+                                formatted_text += f"📧 {value}\n"
                             elif key in ['full_name', 'name', 'имя', 'фио', 'first_name', 'last_name']:
-                                formatted_text += f" 👤 Имя: `{value}`\n"
+                                formatted_text += f"👤 {value}\n"
                             elif key in ['birth_date', 'birthday', 'дата_рождения', 'bdate']:
-                                formatted_text += f" 🎂 Дата рождения: `{value}`\n"
+                                formatted_text += f"🎂 {value}\n"
                             elif key in ['address', 'адрес', 'city', 'город']:
-                                if isinstance(value, dict):
-                                    addr_parts = []
-                                    for addr_key, addr_val in value.items():
-                                        if addr_val:
-                                            addr_parts.append(f"{addr_val}")
-                                    if addr_parts:
-                                        formatted_text += f" 🏠 Адрес: `{', '.join(addr_parts)}`\n"
-                                else:
-                                    formatted_text += f" 🏠 Адрес: `{value}`\n"
+                                formatted_text += f"🏠 {value}\n"
                             elif key in ['sex', 'gender', 'пол']:
-                                gender_map = {'1': 'Женский', '2': 'Мужской', 'male': 'Мужской', 'female': 'Женский'}
-                                formatted_text += f" ⚥ Пол: `{gender_map.get(str(value), value)}`\n"
-                            elif key in ['age', 'возраст']:
-                                formatted_text += f" 🎂 Возраст: `{value}`\n"
-                            elif key in ['vk_id', 'user_id', 'id']:
-                                formatted_text += f" 🆔 ID: `{value}`\n"
-                            else:
-                                # Generic field formatting
-                                if isinstance(value, (str, int, float)) and len(str(value)) < 100:
-                                    formatted_text += f" • {key}: `{value}`\n"
-                        
-                        formatted_text += "\n"
+                                gender_map = {'1': 'Ж', '2': 'М', 'male': 'М', 'female': 'Ж'}
+                                formatted_text += f"⚥ {gender_map.get(str(value), value)}\n"
+                
+                formatted_text += "\n"
 
-    # Format explain results
-    elif 'count' in data and isinstance(data.get('items'), list):
+    formatted_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    formatted_text += "🔒 *Конфиденциальность:* Используйте данные ответственно\n"
+    formatted_text += "💰 *Стоимость поиска:* 2.5 ₽"
+    
+    return formatted_text
+
+def format_explain_results(results: Dict[str, Any], query: str) -> str:
+    """Format explain results (free check)"""
+    if results.get('status') == 'error':
+        return f"❌ *Ошибка:* {results.get('error', {}).get('message', 'Неизвестная ошибка')}"
+
+    data = results.get('data', {})
+    total_count = data.get('count', 0)
+    
+    if total_count == 0:
+        return f"🔍 *Проверка:* `{query}`\n\n❌ *Данных не найдено*\n\n💡 *Попробуйте изменить формат*"
+    
+    formatted_text = f"📊 *БЫСТРАЯ ПРОВЕРКА* (бесплатно)\n\n"
+    formatted_text += f"🔍 *Запрос:* `{query}`\n"
+    formatted_text += f"📈 *Всего найдено:* {total_count} записей\n\n"
+
+    if 'items' in data and isinstance(data['items'], list):
         formatted_text += "📋 *Распределение по базам:*\n\n"
-        for i, item in enumerate(data['items'][:10], 1):  # Show top 10
+        for i, item in enumerate(data['items'][:10], 1):
             source = item.get('source', {})
             hits = item.get('hits', {})
             count = hits.get('count', 0)
             
-            db_display = source.get('database', 'N/A')
-            if db_display in ['yandex', 'avito', 'vk', 'ok']:
-                db_display = db_display.upper()
+            db_names = {
+                'yandex': '🟡 Яндекс',
+                'avito': '🟢 Авито', 
+                'vk': '🔵 ВК',
+                'ok': '🟠 ОК',
+                'delivery_club': '🍕 DC',
+                'cdek': '📦 СДЭК'
+            }
             
-            formatted_text += f"*{i}.* {db_display} / {source.get('collection', 'N/A')}: {count} записей\n"
+            db_display = db_names.get(source.get('database', ''), source.get('database', 'N/A'))
+            formatted_text += f"*{i}.* {db_display}: {count} записей\n"
 
-    # Add security and usage note
-    formatted_text += "\n🔒 *Безопасность:*\n"
-    formatted_text += "• Используйте данные ответственно\n"
-    formatted_text += "• Соблюдайте приватность\n"
-    formatted_text += "• Не нарушайте законы\n\n"
-    formatted_text += "💡 *Примечание:* Показаны основные результаты из открытых источников."
+    formatted_text += f"\n💰 *Полный поиск с данными:* 2.5 ₽\n"
+    formatted_text += f"🆓 *Эта проверка:* БЕСПЛАТНО"
     
     return formatted_text
 
@@ -262,25 +302,20 @@ async def check_subscription(user_id: int) -> bool:
         logging.error(f"Subscription check error: {e}")
         return False
 
-async def send_telegram_message(chat_id: int, text: str, parse_mode: str = None, reply_markup: dict = None) -> bool:
-    """Send message to Telegram user with optional keyboard"""
+async def send_telegram_message(chat_id: int, text: str, parse_mode: str = "Markdown", reply_markup: dict = None) -> bool:
+    """Send message to Telegram user"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "parse_mode": parse_mode
     }
-    
-    # Only add parse_mode if it's explicitly set
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
     
     if reply_markup:
         payload["reply_markup"] = reply_markup
     
     try:
-        logging.info(f"Sending message to chat_id={chat_id}, text length={len(text)}")
         response = requests.post(url, json=payload, timeout=10)
-        logging.info(f"Telegram API response: status={response.status_code}, response={response.text}")
         return response.status_code == 200
     except Exception as e:
         logging.error(f"Failed to send Telegram message: {e}")
@@ -316,14 +351,381 @@ async def get_or_create_user(telegram_id: int, username: str = None, first_name:
             last_name=last_name,
             referral_code=referral_code,
             is_admin=is_admin,
-            attempts_remaining=999 if is_admin else 0  # Admin gets unlimited, others get 0
+            attempts_remaining=999 if is_admin else 3  # Admin gets unlimited, new users get 3 free attempts
         )
         
         await db.users.insert_one(user.dict())
         return user
 
+# API Routes
+@api_router.get("/")
+async def root():
+    return {"message": "УЗРИ - Telegram Bot API", "status": "running"}
+
+@api_router.post("/webhook/{secret}")
+async def telegram_webhook(secret: str, request: Request):
+    """Handle Telegram webhook"""
+    if secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+    
+    try:
+        update_data = await request.json()
+        await handle_telegram_update(update_data)
+        return {"status": "ok"}
+    except Exception as e:
+        logging.error(f"Webhook processing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
+
+async def handle_callback_query(callback_query: Dict[str, Any]):
+    """Handle callback queries from inline keyboard buttons"""
+    chat_id = callback_query.get('message', {}).get('chat', {}).get('id')
+    user_id = callback_query.get('from', {}).get('id')
+    data = callback_query.get('data')
+    callback_query_id = callback_query.get('id')
+    
+    # Answer callback query
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery"
+        requests.post(url, json={"callback_query_id": callback_query_id}, timeout=5)
+    except:
+        pass
+    
+    # Get user
+    user = await get_or_create_user(
+        telegram_id=user_id,
+        username=callback_query.get('from', {}).get('username'),
+        first_name=callback_query.get('from', {}).get('first_name'),
+        last_name=callback_query.get('from', {}).get('last_name')
+    )
+    
+    # Handle different callback data
+    if data == "check_subscription":
+        await handle_subscription_check(chat_id, user_id)
+    elif data == "back_to_menu":
+        await show_main_menu(chat_id, user)
+    elif data == "menu_search":
+        await show_search_menu(chat_id, user)
+    elif data == "menu_profile":
+        await show_profile_menu(chat_id, user)
+    elif data == "menu_check":
+        await show_check_menu(chat_id, user)
+    elif data == "menu_sources":
+        await show_sources_menu(chat_id, user)
+    elif data == "menu_referral":
+        await show_referral_menu(chat_id, user)
+    elif data == "menu_help":
+        await show_help_menu(chat_id, user)
+
+async def handle_subscription_check(chat_id: int, user_id: int):
+    """Handle subscription check"""
+    is_subscribed = await check_subscription(user_id)
+    if is_subscribed:
+        await db.users.update_one(
+            {"telegram_id": user_id},
+            {"$set": {"is_subscribed": True}}
+        )
+        
+        await send_telegram_message(
+            chat_id,
+            "✅ *Подписка подтверждена!*\n\n🎉 Теперь вы можете пользоваться всеми функциями сервиса!"
+        )
+    else:
+        await send_telegram_message(
+            chat_id,
+            "❌ *Подписка не найдена*\n\n📢 Подпишитесь на канал @uzri_sebya и попробуйте снова",
+            reply_markup=create_subscription_keyboard()
+        )
+
+async def show_main_menu(chat_id: int, user: User):
+    """Show main menu"""
+    welcome_text = f"🎯 *СЕРВИС - УЗРИ*\n\n"
+    welcome_text += f"👋 Добро пожаловать, {user.first_name or 'пользователь'}!\n\n"
+    welcome_text += f"💎 *Попыток:* {user.attempts_remaining}\n"
+    welcome_text += f"👥 *Рефералов:* {user.total_referrals}\n\n"
+    welcome_text += f"🔍 *Выберите действие:*"
+    
+    await send_telegram_message(chat_id, welcome_text, reply_markup=create_main_menu())
+
+async def show_search_menu(chat_id: int, user: User):
+    """Show search menu"""
+    if not user.is_admin:
+        is_subscribed = await check_subscription(user.telegram_id)
+        if not is_subscribed:
+            await send_telegram_message(
+                chat_id,
+                "🔒 *Для поиска нужна подписка!*\n\n📢 Подпишитесь на @uzri_sebya",
+                reply_markup=create_subscription_keyboard()
+            )
+            return
+    
+    search_text = f"🔍 *ПОИСК ПО БАЗАМ ДАННЫХ*\n\n"
+    search_text += f"💰 *Стоимость:* 2.5 ₽ за запрос\n"
+    search_text += f"💎 *Ваши попытки:* {user.attempts_remaining}\n\n"
+    search_text += f"📝 *Что можно искать:*\n"
+    search_text += f"📱 Телефон: +79123456789\n"
+    search_text += f"📧 Email: user@mail.ru\n"
+    search_text += f"👤 ФИО: Иван Петров\n"
+    search_text += f"🚗 Авто: А123ВС777\n"
+    search_text += f"🆔 Никнейм: @username\n\n"
+    search_text += f"➡️ *Просто отправьте данные для поиска*"
+    
+    await send_telegram_message(chat_id, search_text, reply_markup=create_back_keyboard())
+
+async def show_profile_menu(chat_id: int, user: User):
+    """Show profile menu"""
+    # Get statistics
+    total_searches = await db.searches.count_documents({"user_id": user.telegram_id})
+    successful_searches = await db.searches.count_documents({"user_id": user.telegram_id, "success": True})
+    
+    profile_text = f"👤 *ВАШ ПРОФИЛЬ*\n\n"
+    profile_text += f"🆔 *ID:* `{user.telegram_id}`\n"
+    profile_text += f"👤 *Имя:* {user.first_name or 'N/A'}\n"
+    profile_text += f"🔗 *Username:* @{user.username or 'N/A'}\n\n"
+    profile_text += f"📊 *СТАТИСТИКА:*\n"
+    profile_text += f"💎 Попыток: {user.attempts_remaining}\n"
+    profile_text += f"🔍 Поисков: {total_searches}\n"
+    profile_text += f"✅ Успешных: {successful_searches}\n"
+    profile_text += f"👥 Рефералов: {user.total_referrals}\n"
+    profile_text += f"📅 Регистрация: {user.created_at.strftime('%d.%m.%Y')}\n\n"
+    
+    if user.is_admin:
+        profile_text += f"👑 *Статус:* АДМИНИСТРАТОР\n"
+    
+    await send_telegram_message(chat_id, profile_text, reply_markup=create_back_keyboard())
+
+async def show_check_menu(chat_id: int, user: User):
+    """Show free check menu"""
+    check_text = f"💡 *БЕСПЛАТНАЯ ПРОВЕРКА*\n\n"
+    check_text += f"🆓 *Стоимость:* БЕСПЛАТНО\n"
+    check_text += f"⚡ *Лимит:* 300 запросов в минуту\n\n"
+    check_text += f"📊 *Что показывает:*\n"
+    check_text += f"• Количество найденных записей\n"
+    check_text += f"• Распределение по базам данных\n"
+    check_text += f"• БЕЗ показа самих данных\n\n"
+    check_text += f"💡 *Используйте для:*\n"
+    check_text += f"• Проверки наличия данных\n"
+    check_text += f"• Оценки количества утечек\n"
+    check_text += f"• Экономии средств\n\n"
+    check_text += f"➡️ *Отправьте данные для проверки*"
+    
+    await send_telegram_message(chat_id, check_text, reply_markup=create_back_keyboard())
+
+async def show_sources_menu(chat_id: int, user: User):
+    """Show sources menu"""
+    try:
+        sources_result = await usersbox_request("/sources")
+        
+        if sources_result.get('status') == 'success':
+            data = sources_result.get('data', {})
+            total_sources = data.get('count', 0)
+            sources = data.get('items', [])[:10]  # Show top 10
+            
+            sources_text = f"📊 *ДОСТУПНЫЕ БАЗЫ ДАННЫХ*\n\n"
+            sources_text += f"🗄️ *Всего баз:* {total_sources}\n"
+            sources_text += f"📈 *Записей:* ~20 миллиардов\n\n"
+            sources_text += f"🔝 *ТОП-10 БАЗ:*\n\n"
+            
+            for i, source in enumerate(sources, 1):
+                title = source.get('title', 'N/A')[:30]
+                count = source.get('count', 0)
+                sources_text += f"*{i}.* {title}\n"
+                sources_text += f"📊 {count:,} записей\n\n"
+        else:
+            sources_text = "❌ Ошибка загрузки списка баз данных"
+    
+    except Exception as e:
+        sources_text = "❌ Ошибка при получении списка баз"
+    
+    await send_telegram_message(chat_id, sources_text, reply_markup=create_back_keyboard())
+
+async def show_referral_menu(chat_id: int, user: User):
+    """Show referral menu"""
+    referral_link = f"https://t.me/{BOT_USERNAME}?start={user.referral_code}"
+    
+    referral_text = f"🔗 *РЕФЕРАЛЬНАЯ ПРОГРАММА*\n\n"
+    referral_text += f"🎁 *За каждого друга:* +3 попытки\n"
+    referral_text += f"💝 *Друг получает:* +3 попытки\n\n"
+    referral_text += f"📊 *ВАША СТАТИСТИКА:*\n"
+    referral_text += f"👥 Приглашено: {user.total_referrals}\n"
+    referral_text += f"💎 Заработано: {user.total_referrals * 3} попыток\n\n"
+    referral_text += f"🔗 *ВАША ССЫЛКА:*\n"
+    referral_text += f"`{referral_link}`\n\n"
+    referral_text += f"📱 *Поделитесь ссылкой в:*\n"
+    referral_text += f"• WhatsApp, Viber\n"
+    referral_text += f"• ВКонтакте, Instagram\n"
+    referral_text += f"• С друзьями и семьей"
+    
+    await send_telegram_message(chat_id, referral_text, reply_markup=create_back_keyboard())
+
+async def show_help_menu(chat_id: int, user: User):
+    """Show help menu"""
+    help_text = f"❓ *СПРАВКА И ПОМОЩЬ*\n\n"
+    help_text += f"🎯 *О СЕРВИСЕ:*\n"
+    help_text += f"УЗРИ помогает найти информацию о себе или близких из открытых источников интернета.\n\n"
+    help_text += f"💰 *ТАРИФЫ:*\n"
+    help_text += f"🔍 Полный поиск: 2.5 ₽\n"
+    help_text += f"💡 Проверка: БЕСПЛАТНО\n\n"
+    help_text += f"🎁 *БЕСПЛАТНЫЕ ПОПЫТКИ:*\n"
+    help_text += f"• При регистрации: 3 попытки\n"
+    help_text += f"• За реферала: +3 попытки\n\n"
+    help_text += f"📞 *ПОДДЕРЖКА:*\n"
+    help_text += f"@eriksson_sop - администратор\n\n"
+    help_text += f"⚖️ *ВАЖНО:*\n"
+    help_text += f"• Используйте данные ответственно\n"
+    help_text += f"• Соблюдайте законы РФ\n"
+    help_text += f"• Не нарушайте приватность"
+    
+    await send_telegram_message(chat_id, help_text, reply_markup=create_back_keyboard())
+
+async def handle_telegram_update(update_data: Dict[str, Any]):
+    """Process incoming Telegram update"""
+    # Handle callback queries
+    callback_query = update_data.get('callback_query')
+    if callback_query:
+        await handle_callback_query(callback_query)
+        return
+    
+    message = update_data.get('message')
+    if not message:
+        return
+
+    chat_id = message.get('chat', {}).get('id')
+    text = message.get('text', '')
+    user_info = message.get('from', {})
+    
+    if not chat_id:
+        return
+
+    # Get or create user
+    user = await get_or_create_user(
+        telegram_id=user_info.get('id', chat_id),
+        username=user_info.get('username'),
+        first_name=user_info.get('first_name'),
+        last_name=user_info.get('last_name')
+    )
+
+    # Handle /start command
+    if text.startswith('/start'):
+        # Check for referral
+        parts = text.split()
+        if len(parts) > 1:
+            referral_code = parts[1]
+            await process_referral(user.telegram_id, referral_code)
+        
+        # Check subscription for non-admin
+        if not user.is_admin:
+            is_subscribed = await check_subscription(user.telegram_id)
+            if not is_subscribed:
+                await send_telegram_message(
+                    chat_id,
+                    f"🎯 *ДОБРО ПОЖАЛОВАТЬ В УЗРИ!*\n\n🔒 *Для использования сервиса подпишитесь на канал @uzri_sebya*",
+                    reply_markup=create_subscription_keyboard()
+                )
+                return
+        
+        await show_main_menu(chat_id, user)
+    
+    # Handle admin commands
+    elif text.startswith('/admin') and user.is_admin:
+        await handle_admin_commands(chat_id, user)
+    
+    # Handle search queries
+    else:
+        await handle_search_query(chat_id, text, user)
+
+async def handle_search_query(chat_id: int, query: str, user: User):
+    """Handle search query"""
+    # Check subscription for non-admin
+    if not user.is_admin:
+        is_subscribed = await check_subscription(user.telegram_id)
+        if not is_subscribed:
+            await send_telegram_message(
+                chat_id,
+                "🔒 Для поиска нужна подписка на @uzri_sebya",
+                reply_markup=create_subscription_keyboard()
+            )
+            return
+    
+    # Check if this is a free check (starts with specific keywords)
+    if query.lower().startswith(('проверь', 'check', 'сколько', 'количество')):
+        actual_query = query.split(' ', 1)[1] if ' ' in query else query
+        await handle_free_check(chat_id, actual_query, user)
+        return
+    
+    # Full search
+    if user.attempts_remaining <= 0 and not user.is_admin:
+        await send_telegram_message(
+            chat_id,
+            "❌ *Попытки закончились!*\n\n🔗 Пригласите друзей для получения новых попыток",
+            reply_markup=create_main_menu()
+        )
+        return
+    
+    # Detect search type and perform search
+    search_type = detect_search_type(query)
+    
+    await send_telegram_message(
+        chat_id,
+        f"🔍 *Выполняю поиск...*\n{search_type}\n⏱️ Подождите..."
+    )
+    
+    try:
+        # Perform search
+        results = await usersbox_request("/search", {"q": query})
+        
+        # Format and send results
+        formatted_results = format_search_results(results, query, search_type)
+        await send_telegram_message(chat_id, formatted_results, reply_markup=create_main_menu())
+        
+        # Save search record
+        search = Search(
+            user_id=user.telegram_id,
+            query=query,
+            search_type=search_type,
+            results=results,
+            success=results.get('status') == 'success',
+            cost=2.5
+        )
+        await db.searches.insert_one(search.dict())
+        
+        # Deduct attempt (except for admin)
+        if not user.is_admin and results.get('status') == 'success':
+            await db.users.update_one(
+                {"telegram_id": user.telegram_id},
+                {"$inc": {"attempts_remaining": -1}}
+            )
+    
+    except Exception as e:
+        await send_telegram_message(
+            chat_id,
+            "❌ Ошибка при выполнении поиска. Попробуйте позже.",
+            reply_markup=create_main_menu()
+        )
+
+async def handle_free_check(chat_id: int, query: str, user: User):
+    """Handle free check query"""
+    await send_telegram_message(
+        chat_id,
+        f"💡 *Бесплатная проверка...*\n🔍 {query}"
+    )
+    
+    try:
+        # Use explain endpoint (free)
+        results = await usersbox_request("/explain", {"q": query})
+        
+        # Format and send results
+        formatted_results = format_explain_results(results, query)
+        await send_telegram_message(chat_id, formatted_results, reply_markup=create_main_menu())
+    
+    except Exception as e:
+        await send_telegram_message(
+            chat_id,
+            "❌ Ошибка при проверке. Попробуйте позже.",
+            reply_markup=create_main_menu()
+        )
+
 async def process_referral(referred_user_id: int, referral_code: str) -> bool:
-    """Process referral and give attempt to referrer"""
+    """Process referral and give attempts"""
     try:
         # Find referrer by code
         referrer = await db.users.find_one({"referral_code": referral_code})
@@ -345,32 +747,30 @@ async def process_referral(referred_user_id: int, referral_code: str) -> bool:
         )
         await db.referrals.insert_one(referral.dict())
 
-        # Give attempt to referrer and update referral count
+        # Give 3 attempts to referrer and update count
         await db.users.update_one(
             {"telegram_id": referrer['telegram_id']},
             {
                 "$inc": {
-                    "attempts_remaining": 1,
+                    "attempts_remaining": 3,
                     "total_referrals": 1
                 }
             }
         )
 
-        # Give 1 attempt to referred user
+        # Give 3 attempts to referred user
         await db.users.update_one(
             {"telegram_id": referred_user_id},
             {
                 "$set": {"referred_by": referrer['telegram_id']},
-                "$inc": {"attempts_remaining": 1}
+                "$inc": {"attempts_remaining": 3}
             }
         )
 
         # Notify referrer
         await send_telegram_message(
             referrer['telegram_id'],
-            f"🎉 *Поздравляем!* Пользователь присоединился по вашей реферальной ссылке!\n\n"
-            f"💎 Вы получили +1 попытку поиска\n"
-            f"👥 Всего рефералов: {referrer['total_referrals'] + 1}"
+            f"🎉 *Новый реферал!*\n\n💎 Вы получили +3 попытки\n👥 Всего рефералов: {referrer['total_referrals'] + 1}"
         )
 
         return True
@@ -378,903 +778,46 @@ async def process_referral(referred_user_id: int, referral_code: str) -> bool:
         logging.error(f"Referral processing error: {e}")
         return False
 
-# API Routes
-@api_router.get("/")
-async def root():
-    return {"message": "Usersbox Telegram Bot API", "status": "running"}
-
-@api_router.post("/webhook/{secret}")
-async def telegram_webhook(secret: str, request: Request):
-    """Handle Telegram webhook"""
-    logging.info(f"Webhook called with secret: {secret}")
-    
-    if secret != WEBHOOK_SECRET:
-        logging.error(f"Invalid webhook secret received: {secret}, expected: {WEBHOOK_SECRET}")
-        raise HTTPException(status_code=403, detail="Invalid webhook secret")
-    
-    try:
-        raw_body = await request.body()
-        logging.info(f"Raw webhook body: {raw_body}")
-        
-        update_data = await request.json()
-        logging.info(f"Parsed webhook data: {update_data}")
-        
-        await handle_telegram_update(update_data)
-        return {"status": "ok"}
-    except Exception as e:
-        logging.error(f"Webhook processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
-
-async def handle_callback_query(callback_query: Dict[str, Any]):
-    """Handle callback queries from inline keyboard buttons"""
-    chat_id = callback_query.get('message', {}).get('chat', {}).get('id')
-    user_id = callback_query.get('from', {}).get('id')
-    data = callback_query.get('data')
-    callback_query_id = callback_query.get('id')
-    
-    if not chat_id or not user_id or not data:
-        logging.error("Missing required callback data")
-        return
-    
-    # Answer callback query to remove loading
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery"
-        requests.post(url, json={"callback_query_id": callback_query_id}, timeout=5)
-    except Exception as e:
-        logging.error(f"Failed to answer callback query: {e}")
-    
-    if data == "check_subscription":
-        # Get user
-        user = await get_or_create_user(
-            telegram_id=user_id,
-            username=callback_query.get('from', {}).get('username'),
-            first_name=callback_query.get('from', {}).get('first_name'),
-            last_name=callback_query.get('from', {}).get('last_name')
-        )
-        
-        # Check subscription
-        is_subscribed = await check_subscription(user_id)
-        if is_subscribed:
-            # Update user subscription status
-            await db.users.update_one(
-                {"telegram_id": user_id},
-                {"$set": {"is_subscribed": True}}
-            )
-            
-            await send_telegram_message(
-                chat_id,
-                "✅ Подписка подтверждена!\n\n"
-                "🎉 Теперь вы можете пользоваться всеми функциями бота!\n"
-                "💡 Отправьте любой запрос для поиска или используйте команду /help"
-            )
-        else:
-            keyboard = {
-                "inline_keyboard": [
-                    [
-                        {"text": "📢 Подписаться на канал", "url": "https://t.me/uzri_sebya"}
-                    ],
-                    [
-                        {"text": "✅ Проверить подписку", "callback_data": "check_subscription"}
-                    ]
-                ]
-            }
-            
-            await send_telegram_message(
-                chat_id,
-                "❌ Подписка не найдена\n\n"
-                "📢 Подпишитесь на канал @uzri_sebya и нажмите 'Проверить подписку' снова",
-                reply_markup=keyboard
-            )
-
-async def handle_telegram_update(update_data: Dict[str, Any]):
-    """Process incoming Telegram update"""
-    logging.info(f"Received telegram update: {update_data}")
-    
-    # Handle callback queries (button presses)
-    callback_query = update_data.get('callback_query')
-    if callback_query:
-        await handle_callback_query(callback_query)
-        return
-    
-    message = update_data.get('message')
-    if not message:
-        logging.info("No message in update")
-        return
-
-    chat = message.get('chat', {})
-    chat_id = chat.get('id')
-    text = message.get('text', '')
-    user_info = message.get('from', {})
-    
-    logging.info(f"Processing message: chat_id={chat_id}, text='{text}', user={user_info.get('username', 'unknown')}")
-    
-    if not chat_id:
-        logging.error("No chat_id in message")
-        return
-
-    # Get or create user
-    user = await get_or_create_user(
-        telegram_id=user_info.get('id', chat_id),
-        username=user_info.get('username'),
-        first_name=user_info.get('first_name'),
-        last_name=user_info.get('last_name')
-    )
-
-    # Handle commands
-    if text.startswith('/start'):
-        await handle_start_command(chat_id, text, user)
-    elif text.startswith('/search'):
-        await handle_search_command(chat_id, text, user)
-    elif text.startswith('/balance'):
-        await handle_balance_command(chat_id, user)
-    elif text.startswith('/referral'):
-        await handle_referral_command(chat_id, user)
-    elif text.startswith('/help'):
-        await handle_help_command(chat_id, user)
-    elif text.startswith('/capabilities'):
-        await handle_capabilities_command(chat_id, user)
-    elif text.startswith('/admin') and user.is_admin:
-        await handle_admin_command(chat_id, text, user)
-    elif text.startswith('/give') and user.is_admin:
-        await handle_give_attempts_command(chat_id, text, user)
-    elif text.startswith('/stats') and user.is_admin:
-        await handle_stats_command(chat_id, user)
-    else:
-        # Check subscription first
-        if not user.is_admin:
-            is_subscribed = await check_subscription(user.telegram_id)
-            if not is_subscribed:
-                keyboard = {
-                    "inline_keyboard": [
-                        [
-                            {"text": "📢 Подписаться на канал", "url": "https://t.me/uzri_sebya"}
-                        ],
-                        [
-                            {"text": "✅ Проверить подписку", "callback_data": "check_subscription"}
-                        ]
-                    ]
-                }
-                
-                await send_telegram_message(
-                    chat_id,
-                    "🔒 *Для использования бота необходимо подписаться на канал!*\n\n"
-                    "📢 Подпишитесь на канал @uzri_sebya и нажмите 'Проверить подписку'\n\n"
-                    "💡 После подписки вы сможете пользоваться всеми функциями бота!",
-                    reply_markup=keyboard
-                )
-                return
-        
-        # Treat as search query if user has attempts
-        if user.attempts_remaining > 0 or user.is_admin:
-            await handle_search_command(chat_id, f"/search {text}", user)
-        else:
-            await send_telegram_message(
-                chat_id,
-                "❌ У вас закончились попытки поиска!\n\n"
-                "🔗 Пригласите друзей по реферальной ссылке, чтобы получить больше попыток.\n"
-                "Используйте /referral для получения ссылки."
-            )
-
-async def handle_start_command(chat_id: int, text: str, user: User):
-    """Handle /start command with enhanced welcome"""
-    # Check for referral code
-    parts = text.split()
-    referral_bonus = False
-    if len(parts) > 1:
-        referral_code = parts[1]
-        referral_bonus = await process_referral(user.telegram_id, referral_code)
-    
-    # Check subscription for non-admin users
-    if not user.is_admin:
-        is_subscribed = await check_subscription(user.telegram_id)
-        if not is_subscribed:
-            keyboard = {
-                "inline_keyboard": [
-                    [
-                        {"text": "📢 Подписаться на канал", "url": "https://t.me/uzri_sebya"}
-                    ],
-                    [
-                        {"text": "✅ Проверить подписку", "callback_data": "check_subscription"}
-                    ]
-                ]
-            }
-            
-            welcome_text = "🔍 ДОБРО ПОЖАЛОВАТЬ В USERSBOX BOT! 🔍\n\n"
-            welcome_text += "🎯 ЧТО УМЕЕТ ЭТОТ БОТ?\n"
-            welcome_text += "Этот бот поможет вам найти информацию о себе или близких из открытых источников в интернете. Узнайте, какие данные о вас попали в различные утечки и базы данных.\n\n"
-            welcome_text += "🔒 ВАЖНОЕ ТРЕБОВАНИЕ:\n"
-            welcome_text += "Для использования бота необходимо подписаться на наш канал!\n\n"
-            welcome_text += "📢 Подпишитесь на @uzri_sebya и нажмите 'Проверить подписку'"
-            
-            await send_telegram_message(chat_id, welcome_text, reply_markup=keyboard)
-            return
-
-    # Create simple welcome message without complex formatting
-    welcome_text = f"👋 Добро пожаловать, {user.first_name or 'пользователь'}!\n\n"
-    
-    welcome_text += "🔍 USERSBOX SEARCH BOT\n\n"
-    
-    welcome_text += "🎯 ЧТО ЭТОТ БОТ УМЕЕТ?\n"
-    welcome_text += "Данный бот позволяет \"пробить\" себя или близкого человека, чтобы узнать какая информация о нем слита в открытых источниках интернета.\n\n"
-    
-    welcome_text += "🔍 ВОЗМОЖНОСТИ ПОИСКА:\n"
-    welcome_text += "📱 По номеру телефона (+79123456789)\n"
-    welcome_text += "📧 По email адресу (ivan@mail.ru)\n"
-    welcome_text += "👤 По ФИО (Иван Петров)\n"
-    welcome_text += "🚗 По номеру автомобиля (А123ВС777)\n"
-    welcome_text += "🆔 По никнейму (@username)\n"
-    welcome_text += "🏠 По адресу (Москва Тверская 1)\n"
-    welcome_text += "🌐 По IP адресу (192.168.1.1)\n\n"
-    
-    welcome_text += "💡 КАК ПОЛЬЗОВАТЬСЯ?\n"
-    welcome_text += "Просто отправьте мне:\n"
-    welcome_text += "• Номер телефона = поиск по телефону\n"
-    welcome_text += "• Email = поиск по почте\n"
-    welcome_text += "• Имя Фамилия = поиск по ФИО\n"
-    welcome_text += "И так далее!\n\n"
-
-    welcome_text += f"📈 ВАШ СТАТУС:\n"
-    welcome_text += f"💎 Попыток поиска: {user.attempts_remaining}\n"
-    welcome_text += f"👥 Приглашено друзей: {user.total_referrals}\n"
-    welcome_text += f"📅 Дата регистрации: {user.created_at.strftime('%d.%m.%Y')}\n\n"
-    
-    if referral_bonus:
-        welcome_text += "🎉 БОНУС! Вы получили +1 попытку за переход по реферальной ссылке!\n\n"
-
-    welcome_text += "🎮 КОМАНДЫ БОТА:\n"
-    welcome_text += "/search [запрос] - поиск информации\n"
-    welcome_text += "/balance - проверить баланс попыток\n"
-    welcome_text += "/referral - получить реферальную ссылку\n"
-    welcome_text += "/help - подробная справка\n"
-    welcome_text += "/capabilities - список всех возможностей\n\n"
-
-    if user.is_admin:
-        welcome_text += "🔧 АДМИН ПАНЕЛЬ:\n"
-        welcome_text += "/admin - панель администратора\n"
-        welcome_text += "/give [ID] [попытки] - выдать попытки\n"
-        welcome_text += "/stats - полная статистика\n\n"
-
-    welcome_text += "💸 ПОЛУЧИТЬ ПОПЫТКИ:\n"
-    welcome_text += "🎁 За каждого приглашенного друга: +1 попытка\n"
-    welcome_text += "🔗 Используйте команду /referral для получения ссылки\n\n"
-
-    welcome_text += "🚀 Готов к поиску? Отправьте запрос прямо сейчас!"
-
-    await send_telegram_message(chat_id, welcome_text)
-
-async def handle_capabilities_command(chat_id: int, user: User):
-    """Handle capabilities command - detailed list of search capabilities"""
-    cap_text = "🎯 *═══════════════════════════*\n"
-    cap_text += " 🔍 *ВОЗМОЖНОСТИ ПОИСКА*\n"
-    cap_text += "*═══════════════════════════* 🎯\n\n"
-    
-    cap_text += "📱 *═══ ПОИСК ПО ТЕЛЕФОНУ ═══*\n"
-    cap_text += "• Российские номера: `+79123456789`\n"
-    cap_text += "• Без плюса: `79123456789`\n"
-    cap_text += "• С кодом 8: `89123456789`\n"
-    cap_text += "• Форматированные: `+7(912)345-67-89`\n\n"
-    
-    cap_text += "📧 *═══ ПОИСК ПО EMAIL ═══*\n"
-    cap_text += "• Любые домены: `user@mail.ru`\n"
-    cap_text += "• Gmail: `user@gmail.com`\n"
-    cap_text += "• Яндекс: `user@yandex.ru`\n"
-    cap_text += "• Корпоративные: `user@company.com`\n\n"
-    
-    cap_text += "👤 *═══ ПОИСК ПО ФИО ═══*\n"
-    cap_text += "• Полное ФИО: `Иван Петров Сидоров`\n"
-    cap_text += "• Имя Фамилия: `Иван Петров`\n"
-    cap_text += "• Только имя: `Иван`\n"
-    cap_text += "• На латинице: `Ivan Petrov`\n\n"
-    
-    cap_text += "🚗 *═══ ПОИСК ПО АВТО ═══*\n"
-    cap_text += "• Российские номера: `А123ВС777`\n"
-    cap_text += "• С пробелами: `А 123 ВС 77`\n"
-    cap_text += "• Старый формат: `А123ВС99`\n\n"
-    
-    cap_text += "🆔 *═══ ПОИСК ПО НИКНЕЙМУ ═══*\n"
-    cap_text += "• С собачкой: `@username`\n"
-    cap_text += "• Без собачки: `username`\n"
-    cap_text += "• ID пользователя: `123456789`\n\n"
-    
-    cap_text += "🏠 *═══ ПОИСК ПО АДРЕСУ ═══*\n"
-    cap_text += "• Полный адрес: `Москва ул Тверская д1`\n"
-    cap_text += "• Название улицы: `Тверская улица`\n"
-    cap_text += "• Город: `Москва`\n\n"
-    
-    cap_text += "🌐 *═══ ДОПОЛНИТЕЛЬНО ═══*\n"
-    cap_text += "• IP адреса: `192.168.1.1`\n"
-    cap_text += "• Общий поиск: любой текст\n\n"
-    
-    cap_text += "🗃️ *═══ ИСТОЧНИКИ ДАННЫХ ═══*\n"
-    cap_text += "• 📱 Мессенджеры (Telegram, WhatsApp)\n"
-    cap_text += "• 🌐 Соцсети (VK, OK, Instagram)\n"
-    cap_text += "• 🛒 Интернет-магазины (Avito, OZON)\n"
-    cap_text += "• 🚚 Доставка (CDEK, Delivery Club)\n"
-    cap_text += "• 🏦 Банковские данные\n"
-    cap_text += "• 📋 Государственные базы\n"
-    cap_text += "• 🎯 И еще 100+ источников!\n\n"
-    
-    cap_text += "💡 *═══ СОВЕТЫ ПО ПОИСКУ ═══*\n"
-    cap_text += "✅ Используйте полные данные\n"
-    cap_text += "✅ Проверяйте разные форматы\n"
-    cap_text += "✅ Пробуйте все варианты имени\n"
-    cap_text += "❌ Не используйте сокращения\n"
-    cap_text += "❌ Избегайте опечаток\n\n"
-    
-    cap_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    cap_text += "🔍 *Просто отправьте данные - бот определит тип автоматически!*"
-    
-    await send_telegram_message(chat_id, cap_text)
-
-async def handle_search_command(chat_id: int, text: str, user: User):
-    """Handle search command with enhanced search type detection"""
-    # Extract query
-    query = text.replace('/search', '', 1).strip()
-    if not query:
-        await send_telegram_message(
-            chat_id,
-            "❌ Ошибка: Укажите запрос для поиска\n\n"
-            "Примеры:\n"
-            "📱 +79123456789 - поиск по телефону\n"
-            "📧 ivan@mail.ru - поиск по email\n"
-            "👤 Иван Петров - поиск по имени\n\n"
-            "💡 Или используйте /capabilities для полного списка"
-        )
-        return
-
-    # Check subscription for non-admin users
-    if not user.is_admin:
-        is_subscribed = await check_subscription(user.telegram_id)
-        if not is_subscribed:
-            keyboard = {
-                "inline_keyboard": [
-                    [
-                        {"text": "📢 Подписаться на канал", "url": "https://t.me/uzri_sebya"}
-                    ],
-                    [
-                        {"text": "✅ Проверить подписку", "callback_data": "check_subscription"}
-                    ]
-                ]
-            }
-            
-            await send_telegram_message(
-                chat_id,
-                "🔒 Для использования поиска необходимо подписаться на канал!\n\n"
-                "📢 Подпишитесь на @uzri_sebya и нажмите 'Проверить подписку'",
-                reply_markup=keyboard
-            )
-            return
-
-    # Check attempts
-    if user.attempts_remaining <= 0 and not user.is_admin:
-        await send_telegram_message(
-            chat_id,
-            "❌ У вас закончились попытки поиска!\n\n"
-            "🔗 Пригласите друзей по реферальной ссылке:\n"
-            "Используйте /referral для получения ссылки."
-        )
-        return
-
-    # Detect search type
-    search_type = detect_search_type(query)
-    
-    # Send searching message with detected type
-    type_emojis = {
-        "phone": "📱",
-        "email": "📧", 
-        "name": "👤",
-        "car_number": "🚗",
-        "username": "🆔",
-        "ip_address": "🌐",
-        "address": "🏠",
-        "general": "🔍"
-    }
-    
-    search_emoji = type_emojis.get(search_type, "🔍")
-    await send_telegram_message(
-        chat_id, 
-        f"{search_emoji} Выполняю поиск...\n"
-        f"🔍 Тип: {search_type}\n"
-        f"⏱️ Подождите немного..."
-    )
-
-    try:
-        # Call usersbox API
-        headers = {"Authorization": USERSBOX_TOKEN}
-        response = requests.get(
-            f"{USERSBOX_BASE_URL}/search",
-            headers=headers,
-            params={"q": query},
-            timeout=30
-        )
-
-        results = response.json()
-
-        # Format and send results
-        formatted_results = format_search_results(results, query, search_type)
-        await send_telegram_message(chat_id, formatted_results)
-
-        # Save search record
-        search = Search(
-            user_id=user.telegram_id,
-            query=query,
-            search_type=search_type,
-            results=results,
-            success=response.status_code == 200
-        )
-        await db.searches.insert_one(search.dict())
-
-        # Deduct attempt (except for admin)
-        if not user.is_admin and response.status_code == 200:
-            await db.users.update_one(
-                {"telegram_id": user.telegram_id},
-                {"$inc": {"attempts_remaining": -1}}
-            )
-            
-            # Update user object
-            user.attempts_remaining -= 1
-
-            # Show remaining attempts
-            if user.attempts_remaining > 0:
-                await send_telegram_message(
-                    chat_id,
-                    f"💎 Осталось попыток: {user.attempts_remaining}"
-                )
-            else:
-                await send_telegram_message(
-                    chat_id,
-                    "❌ Попытки закончились!\n\n"
-                    "🔗 Получите больше попыток, пригласив друзей:\n"
-                    "Используйте /referral"
-                )
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Usersbox API error: {e}")
-        await send_telegram_message(
-            chat_id,
-            "❌ Ошибка при выполнении поиска\n\n"
-            "Сервис временно недоступен. Попробуйте позже."
-        )
-    except Exception as e:
-        logging.error(f"Search error: {e}")
-        await send_telegram_message(
-            chat_id,
-            "❌ Произошла ошибка при поиске\n\n"
-            "Попробуйте еще раз или обратитесь к администратору."
-        )
-
-async def handle_balance_command(chat_id: int, user: User):
-    """Handle balance command with enhanced statistics"""
-    # Get user's search history
-    recent_searches = await db.searches.find({"user_id": user.telegram_id}).sort("timestamp", -1).limit(5).to_list(5)
-    total_searches = await db.searches.count_documents({"user_id": user.telegram_id})
-    successful_searches = await db.searches.count_documents({"user_id": user.telegram_id, "success": True})
-
-    balance_text = "💰 *═══════════════════════════*\n"
-    balance_text += " 💎 *ВАШ БАЛАНС И СТАТИСТИКА*\n"
-    balance_text += "*═══════════════════════════* 💰\n\n"
-
-    # Balance section
-    balance_text += "💎 *═══ БАЛАНС ПОПЫТОК ═══*\n"
-    balance_text += f"🔍 *Доступно поисков:* `{user.attempts_remaining}`\n"
-    balance_text += f"👥 *Приглашено друзей:* `{user.total_referrals}`\n"
-    balance_text += f"📅 *Регистрация:* `{user.created_at.strftime('%d.%m.%Y %H:%M')}`\n"
-    balance_text += f"⏰ *Последняя активность:* `{user.last_active.strftime('%d.%m.%Y %H:%M')}`\n\n"
-
-    # Statistics section
-    balance_text += "📊 *═══ СТАТИСТИКА ПОИСКОВ ═══*\n"
-    balance_text += f"🔍 *Всего поисков:* `{total_searches}`\n"
-    balance_text += f"✅ *Успешных:* `{successful_searches}`\n"
-    
-    if total_searches > 0:
-        success_rate = (successful_searches / total_searches) * 100
-        balance_text += f"📈 *Успешность:* `{success_rate:.1f}%`\n"
-    else:
-        balance_text += f"📈 *Успешность:* `0%`\n"
-    
-    balance_text += f"🎯 *Реферальный код:* `{user.referral_code}`\n\n"
-
-    # Recent searches with types
-    if recent_searches:
-        balance_text += "🕐 *═══ ПОСЛЕДНИЕ ПОИСКИ ═══*\n"
-        for i, search in enumerate(recent_searches[:3], 1):
-            status = "✅" if search.get('success', False) else "❌"
-            query = search.get('query', 'N/A')[:20] + "..." if len(search.get('query', '')) > 20 else search.get('query', 'N/A')
-            search_type = search.get('search_type', 'general')
-            date = search.get('timestamp', datetime.utcnow()).strftime('%d.%m %H:%M')
-            
-            type_emojis = {
-                "phone": "📱", "email": "📧", "name": "👤", "car_number": "🚗",
-                "username": "🆔", "ip_address": "🌐", "address": "🏠", "general": "🔍"
-            }
-            type_emoji = type_emojis.get(search_type, "🔍")
-            
-            balance_text += f"{status} {type_emoji} `{query}` - {date}\n"
-        
-        balance_text += "\n"
-
-    # Recommendations based on attempts
-    if user.attempts_remaining == 0:
-        balance_text += "🚨 *═══ ПОПЫТКИ ЗАКОНЧИЛИСЬ ═══*\n"
-        balance_text += "🔗 *Получите больше попыток:*\n"
-        balance_text += "• Пригласите друзей по реферальной ссылке\n"
-        balance_text += "• Используйте `/referral` для получения ссылки\n"
-        balance_text += "• За каждого друга: +1 попытка\n\n"
-    elif user.attempts_remaining <= 3:
-        balance_text += "⚠️ *═══ МАЛО ПОПЫТОК ═══*\n"
-        balance_text += "💡 Рекомендуем пригласить друзей для получения дополнительных попыток!\n"
-        balance_text += "🔗 Команда: `/referral`\n\n"
-
-    balance_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    balance_text += "💡 *Хотите больше попыток? Используйте* `/referral`"
-
-    await send_telegram_message(chat_id, balance_text)
-
-async def handle_referral_command(chat_id: int, user: User):
-    """Handle referral command with enhanced referral system"""
-    referral_link = f"https://t.me/{BOT_USERNAME}?start={user.referral_code}"
-
-    # Get referral statistics
-    referrals = await db.referrals.find({"referrer_id": user.telegram_id}).to_list(100)
-    total_earned = len(referrals)
-
-    referral_text = "🔗 *═══════════════════════════*\n"
-    referral_text += " 💰 *РЕФЕРАЛЬНАЯ ПРОГРАММА*\n"
-    referral_text += "*═══════════════════════════* 🔗\n\n"
-
-    referral_text += "🎯 *═══ ВАША ССЫЛКА ═══*\n"
-    referral_text += f"🔗 `{referral_link}`\n\n"
-    referral_text += "📋 *Нажмите на ссылку выше для копирования*\n\n"
-
-    referral_text += "📊 *═══ ВАША СТАТИСТИКА ═══*\n"
-    referral_text += f"👥 *Приглашено друзей:* `{user.total_referrals}`\n"
-    referral_text += f"💎 *Заработано попыток:* `{total_earned}`\n"
-    referral_text += f"🎯 *Ваш код:* `{user.referral_code}`\n\n"
-
-    referral_text += "💰 *═══ КАК ЭТО РАБОТАЕТ ═══*\n"
-    referral_text += "1️⃣ *Поделитесь* ссылкой с друзьями\n"
-    referral_text += "2️⃣ *Друг переходит* по вашей ссылке\n"
-    referral_text += "3️⃣ *Друг регистрируется* в боте\n"
-    referral_text += "4️⃣ *Вы получаете* +1 попытку поиска\n"
-    referral_text += "5️⃣ *Друг также получает* +1 попытку\n"
-    referral_text += "6️⃣ *Повторяйте* для неограниченных попыток!\n\n"
-
-    referral_text += "🎁 *═══ БОНУСЫ ═══*\n"
-    referral_text += "• 💎 За каждого друга: +1 попытка ВАМ\n"
-    referral_text += "• 🎁 Друг также получает: +1 попытка\n"
-    referral_text += "• 🔄 Попытки накапливаются навсегда\n"
-    referral_text += "• 🚀 Неограниченное количество рефералов\n\n"
-
-    referral_text += "📱 *═══ ГДЕ ПОДЕЛИТЬСЯ ═══*\n"
-    referral_text += "• 💬 В мессенджерах (WhatsApp, Viber)\n"
-    referral_text += "• 📱 В социальных сетях (VK, Instagram)\n"
-    referral_text += "• 👨‍👩‍👧‍👦 С семьей и друзьями\n"
-    referral_text += "• 💼 С коллегами по работе\n"
-    referral_text += "• 🎮 В игровых чатах\n\n"
-
-    # Status based on referrals
-    if user.total_referrals >= 10:
-        referral_text += "🏆 *═══ СТАТУС VIP ═══*\n"
-        referral_text += "🌟 Поздравляем! Вы VIP-реферер!\n"
-        referral_text += f"👑 {user.total_referrals} приглашенных друзей\n\n"
-    elif user.total_referrals >= 5:
-        referral_text += "🥇 *═══ СТАТУС МАСТЕР ═══*\n"
-        referral_text += "⭐ Отличная работа! Вы мастер рефералов!\n"
-        referral_text += f"🏅 {user.total_referrals} приглашенных друзей\n\n"
-    elif user.total_referrals >= 1:
-        referral_text += "🥉 *═══ ПЕРВЫЕ УСПЕХИ ═══*\n"
-        referral_text += "👍 Хорошее начало!\n"
-        referral_text += f"📈 {user.total_referrals} приглашенных друзей\n\n"
-
-    referral_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    referral_text += "💡 *Чем больше друзей, тем больше поисков!*"
-
-    await send_telegram_message(chat_id, referral_text)
-
-async def handle_help_command(chat_id: int, user: User):
-    """Handle help command with comprehensive guide"""
-    help_text = "📖 *═══════════════════════════*\n"
-    help_text += " 📚 *ПОДРОБНАЯ СПРАВКА*\n"
-    help_text += "*═══════════════════════════* 📖\n\n"
-
-    help_text += "🎯 *═══ ОСНОВНЫЕ КОМАНДЫ ═══*\n"
-    help_text += "🔍 `/search [запрос]` - поиск по базам данных\n"
-    help_text += "💰 `/balance` - баланс попыток и статистика\n"
-    help_text += "🔗 `/referral` - реферальная ссылка\n"
-    help_text += "🎯 `/capabilities` - все возможности поиска\n"
-    help_text += "📖 `/help` - эта справка\n\n"
-
-    help_text += "🔍 *═══ БЫСТРЫЕ ПРИМЕРЫ ═══*\n"
-    help_text += "📱 *Телефон:* `+79123456789`\n"
-    help_text += "📧 *Email:* `ivan@mail.ru`\n"
-    help_text += "👤 *ФИО:* `Иван Петров`\n"
-    help_text += "🚗 *Авто:* `А123ВС777`\n"
-    help_text += "🆔 *Никнейм:* `@username`\n"
-    help_text += "🏠 *Адрес:* `Москва Тверская 1`\n\n"
-
-    help_text += "📊 *═══ ЧТО НАЙДЕТ БОТ ═══*\n"
-    help_text += "• 📞 Данные по номерам телефонов\n"
-    help_text += "• 📧 Информация по email адресам\n"
-    help_text += "• 👥 Профили в социальных сетях\n"
-    help_text += "• 🏠 Адресные данные и геолокация\n"
-    help_text += "• 🚗 Информация по автомобилям\n"
-    help_text += "• 💳 Банковские и платежные данные\n"
-    help_text += "• 🛒 Данные интернет-магазинов\n"
-    help_text += "• 📋 Государственные базы данных\n"
-    help_text += "• 🎯 И многое другое из 100+ источников\n\n"
-
-    help_text += "💎 *═══ СИСТЕМА ПОПЫТОК ═══*\n"
-    help_text += "🎁 *При регистрации:* 0 попыток\n"
-    help_text += "🔗 *За реферала:* +1 попытка вам и другу\n"
-    help_text += "👥 *Безлимит:* приглашайте друзей\n"
-    help_text += "⚡ *Админы:* неограниченные попытки\n\n"
-
-    help_text += "🔗 *═══ РЕФЕРАЛЬНАЯ СИСТЕМА ═══*\n"
-    help_text += "1️⃣ Получите ссылку: `/referral`\n"
-    help_text += "2️⃣ Поделитесь с друзьями\n"
-    help_text += "3️⃣ Друг переходит и регистрируется\n"
-    help_text += "4️⃣ Оба получаете по +1 попытке\n"
-    help_text += "5️⃣ Повторяйте для неограниченных попыток!\n\n"
-
-    help_text += "⚠️ *═══ ВАЖНЫЕ ПРАВИЛА ═══*\n"
-    help_text += "• 🚫 Не используйте для незаконных целей\n"
-    help_text += "• 👮 Соблюдайте законы вашей страны\n"
-    help_text += "• 🤝 Уважайте приватность других людей\n"
-    help_text += "• 🔒 Не передавайте данные третьим лицам\n"
-    help_text += "• 📢 Обязательна подписка на канал @uzri_sebya\n\n"
-
-    help_text += "❓ *═══ ПРОБЛЕМЫ? ═══*\n"
-    help_text += "📝 Напишите администратору: @eriksson_sop\n"
-    help_text += "🔧 Или используйте команды для диагностики\n\n"
-
-    help_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    help_text += "🚀 *Готов найти любую информацию!*"
-
-    await send_telegram_message(chat_id, help_text)
-
-async def handle_admin_command(chat_id: int, text: str, user: User):
-    """Handle admin commands with enhanced statistics"""
+async def handle_admin_commands(chat_id: int, user: User):
+    """Handle admin commands"""
     # Get system statistics
     total_users = await db.users.count_documents({})
     total_searches = await db.searches.count_documents({})
     total_referrals = await db.referrals.count_documents({})
-    successful_searches = await db.searches.count_documents({"success": True})
-
-    # Recent activity (last 24 hours)
-    from datetime import datetime, timedelta
-    yesterday = datetime.utcnow() - timedelta(days=1)
-    recent_users = await db.users.count_documents({"created_at": {"$gte": yesterday}})
-    recent_searches = await db.searches.count_documents({"timestamp": {"$gte": yesterday}})
-
-    # Top users by referrals
-    top_referrers = await db.users.find().sort("total_referrals", -1).limit(5).to_list(5)
-
-    admin_text = "👑 *═══════════════════════════*\n"
-    admin_text += " 🔧 *АДМИН ПАНЕЛЬ*\n"
-    admin_text += "*═══════════════════════════* 👑\n\n"
-
-    admin_text += "📊 *═══ ОБЩАЯ СТАТИСТИКА ═══*\n"
-    admin_text += f"👥 *Всего пользователей:* `{total_users}`\n"
-    admin_text += f"🔍 *Всего поисков:* `{total_searches}`\n"
-    admin_text += f"✅ *Успешных поисков:* `{successful_searches}`\n"
-    admin_text += f"🔗 *Всего рефералов:* `{total_referrals}`\n"
     
-    if total_searches > 0:
-        success_rate = (successful_searches / total_searches) * 100
-        admin_text += f"📈 *Успешность:* `{success_rate:.1f}%`\n"
+    admin_text = f"👑 *АДМИН ПАНЕЛЬ*\n\n"
+    admin_text += f"📊 *СТАТИСТИКА:*\n"
+    admin_text += f"👥 Пользователей: {total_users}\n"
+    admin_text += f"🔍 Поисков: {total_searches}\n"
+    admin_text += f"🔗 Рефералов: {total_referrals}\n\n"
+    admin_text += f"🛠️ *Управление через веб-интерфейс*"
     
-    admin_text += "\n"
-
-    admin_text += "📈 *═══ АКТИВНОСТЬ (24ч) ═══*\n"
-    admin_text += f"🆕 *Новых пользователей:* `{recent_users}`\n"
-    admin_text += f"🔍 *Поисков за день:* `{recent_searches}`\n\n"
-
-    admin_text += "🏆 *═══ ТОП РЕФЕРЕРЫ ═══*\n"
-    for i, referrer in enumerate(top_referrers[:3], 1):
-        name = referrer.get('first_name', 'Неизвестно')[:15]
-        refs = referrer.get('total_referrals', 0)
-        admin_text += f"{i}. `{name}` - {refs} рефералов\n"
-    
-    admin_text += "\n"
-
-    admin_text += "🔧 *═══ АДМИН КОМАНДЫ ═══*\n"
-    admin_text += "💎 `/give [ID] [попытки]` - выдать попытки\n"
-    admin_text += "📊 `/stats` - подробная статистика\n"
-    admin_text += "🔧 Используйте API для управления через фронтенд\n\n"
-
-    admin_text += "📋 *═══ ПОЛЕЗНЫЕ ID ═══*\n"
-    admin_text += f"🤖 *Ваш ID:* `{user.telegram_id}`\n"
-    admin_text += f"🎯 *Ваш код:* `{user.referral_code}`\n\n"
-
-    admin_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    admin_text += "👑 *Полный контроль над системой*"
-
-    await send_telegram_message(chat_id, admin_text)
-
-async def handle_give_attempts_command(chat_id: int, text: str, user: User):
-    """Handle give attempts admin command"""
-    parts = text.split()
-    if len(parts) != 3:
-        await send_telegram_message(
-            chat_id,
-            "❌ *Неверный формат команды*\n\n"
-            "*Использование:* `/give [user_id] [attempts]`\n"
-            "*Пример:* `/give 123456789 5`"
-        )
-        return
-
-    try:
-        target_user_id = int(parts[1])
-        attempts_to_give = int(parts[2])
-
-        # Check if user exists
-        target_user = await db.users.find_one({"telegram_id": target_user_id})
-        if not target_user:
-            await send_telegram_message(
-                chat_id,
-                f"❌ Пользователь с ID {target_user_id} не найден"
-            )
-            return
-
-        # Give attempts
-        await db.users.update_one(
-            {"telegram_id": target_user_id},
-            {"$inc": {"attempts_remaining": attempts_to_give}}
-        )
-
-        # Notify admin
-        await send_telegram_message(
-            chat_id,
-            f"✅ Пользователю {target_user_id} выдано {attempts_to_give} попыток"
-        )
-
-        # Notify user
-        await send_telegram_message(
-            target_user_id,
-            f"🎁 *Вам выданы попытки!*\n\n"
-            f"💎 Получено попыток: {attempts_to_give}\n"
-            f"Можете продолжать поиск!"
-        )
-
-    except ValueError:
-        await send_telegram_message(
-            chat_id,
-            "❌ Неверный формат ID пользователя или количества попыток"
-        )
-    except Exception as e:
-        logging.error(f"Give attempts error: {e}")
-        await send_telegram_message(
-            chat_id,
-            "❌ Ошибка при выдаче попыток"
-        )
-
-async def handle_stats_command(chat_id: int, user: User):
-    """Handle stats admin command"""
-    try:
-        # Get comprehensive statistics
-        total_users = await db.users.count_documents({})
-        total_searches = await db.searches.count_documents({})
-        total_referrals = await db.referrals.count_documents({})
-        successful_searches = await db.searches.count_documents({"success": True})
-
-        # Recent activity
-        recent_users = await db.users.count_documents({
-            "created_at": {"$gte": datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
-        })
-        recent_searches = await db.searches.count_documents({
-            "timestamp": {"$gte": datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)}
-        })
-
-        # Search type distribution
-        search_types = await db.searches.aggregate([
-            {"$group": {"_id": "$search_type", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}}
-        ]).to_list(10)
-
-        stats_text = "📊 *═══ ДЕТАЛЬНАЯ СТАТИСТИКА ═══*\n\n"
-        
-        stats_text += f"👥 *Всего пользователей:* {total_users}\n"
-        stats_text += f"🔍 *Всего поисков:* {total_searches}\n"
-        stats_text += f"✅ *Успешных поисков:* {successful_searches}\n"
-        stats_text += f"🔗 *Рефералов:* {total_referrals}\n\n"
-
-        stats_text += f"📈 *За сегодня:*\n"
-        stats_text += f"• Новых пользователей: {recent_users}\n"
-        stats_text += f"• Поисков: {recent_searches}\n\n"
-
-        if total_searches > 0:
-            success_rate = (successful_searches / total_searches) * 100
-            stats_text += f"📊 *Успешность поисков:* {success_rate:.1f}%\n\n"
-
-        if search_types:
-            stats_text += "🔍 *Популярные типы поиска:*\n"
-            for search_type in search_types[:5]:
-                stats_text += f"• {search_type['_id']}: {search_type['count']}\n"
-
-        await send_telegram_message(chat_id, stats_text)
-
-    except Exception as e:
-        logging.error(f"Stats error: {e}")
-        await send_telegram_message(
-            chat_id,
-            "❌ Ошибка при получении статистики"
-        )
+    await send_telegram_message(chat_id, admin_text, reply_markup=create_main_menu())
 
 # API endpoints for web dashboard
-@api_router.post("/search")
-async def api_search(query: str = Query(...)):
-    """Search via usersbox API"""
-    headers = {"Authorization": USERSBOX_TOKEN}
-    try:
-        response = requests.get(
-            f"{USERSBOX_BASE_URL}/search",
-            headers=headers,
-            params={"q": query},
-            timeout=30
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"API request failed: {str(e)}")
-
 @api_router.get("/users")
 async def get_users():
-    """Get all users for admin dashboard"""
+    """Get all users"""
     users = await db.users.find().to_list(1000)
     for user in users:
         user["_id"] = str(user["_id"])
     return users
 
-@api_router.get("/searches")
-async def get_searches():
-    """Get search history"""
-    searches = await db.searches.find().sort("timestamp", -1).limit(100).to_list(100)
-    for search in searches:
-        search["_id"] = str(search["_id"])
-    return searches
-
-@api_router.post("/give-attempts")
-async def give_attempts_api(user_id: int, attempts: int):
-    """Give attempts to user via API"""
-    try:
-        result = await db.users.update_one(
-            {"telegram_id": user_id},
-            {"$inc": {"attempts_remaining": attempts}}
-        )
-        
-        if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Notify user
-        await send_telegram_message(
-            user_id,
-            f"🎁 *Вам выданы попытки!*\n\n"
-            f"💎 Получено попыток: {attempts}\n"
-            f"Можете продолжать поиск!"
-        )
-
-        return {"status": "success", "message": f"Gave {attempts} attempts to user {user_id}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @api_router.get("/stats")
 async def get_stats():
     """Get bot statistics"""
-    try:
-        total_users = await db.users.count_documents({})
-        total_searches = await db.searches.count_documents({})
-        total_referrals = await db.referrals.count_documents({})
-        successful_searches = await db.searches.count_documents({"success": True})
+    total_users = await db.users.count_documents({})
+    total_searches = await db.searches.count_documents({})
+    total_referrals = await db.referrals.count_documents({})
+    successful_searches = await db.searches.count_documents({"success": True})
 
-        return {
-            "total_users": total_users,
-            "total_searches": total_searches,
-            "total_referrals": total_referrals,
-            "successful_searches": successful_searches,
-            "success_rate": (successful_searches / total_searches * 100) if total_searches > 0 else 0
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "total_users": total_users,
+        "total_searches": total_searches,
+        "total_referrals": total_referrals,
+        "successful_searches": successful_searches,
+        "success_rate": (successful_searches / total_searches * 100) if total_searches > 0 else 0
+    }
 
 # Include the router in the main app
 app.include_router(api_router)
