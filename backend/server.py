@@ -843,7 +843,7 @@ async def handle_payment_callback(chat_id: int, user: User, data: str):
     elif data == "pay_stars":
         await send_telegram_message(
             chat_id,
-            "⭐ *ПОПОЛНЕНИЕ ЗВЕЗДАМИ*\n\n💡 Функция в разработке\n\nОбратитесь к администратору @eriksson_sop",
+            "⭐ *ПОПОЛНЕНИЕ ЗВЕЗДАМИ*\n\n💡 Функция в разработке\n\nОбратитесь к поддержке @Sigicara",
             reply_markup=create_back_keyboard()
         )
     
