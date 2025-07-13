@@ -636,10 +636,6 @@ async def show_profile_menu(chat_id: int, user: User):
     """Show profile menu"""
     total_searches = await db.searches.count_documents({"user_id": user.telegram_id})
     successful_searches = await db.searches.count_documents({"user_id": user.telegram_id, "success": True})
-    total_spent = await db.searches.aggregate([
-        {"$match": {"user_id": user.telegram_id}},
-        {"$group": {"_id": None, "total": {"$sum": "$cost"}}}
-    ]).to_list(1)
     
     profile_text = f"👤 *ВАШ ПРОФИЛЬ*\n\n"
     profile_text += f"🆔 *ID:* `{user.telegram_id}`\n"
@@ -659,10 +655,7 @@ async def show_profile_menu(chat_id: int, user: User):
     else:
         profile_text += f"❌ Подписка: Нет\n"
     
-    total_spent_amount = total_spent[0]['total'] if total_spent else 0
-    profile_text += f"💸 Потрачено: {total_spent_amount:.2f} ₽\n\n"
-    
-    profile_text += f"📊 *СТАТИСТИКА:*\n"
+    profile_text += f"\n📊 *СТАТИСТИКА:*\n"
     profile_text += f"🔍 Поисков: {total_searches}\n"
     profile_text += f"✅ Успешных: {successful_searches}\n"
     profile_text += f"👥 Рефералов: {user.total_referrals}\n"
