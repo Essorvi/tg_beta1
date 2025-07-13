@@ -789,7 +789,7 @@ async def show_rules_menu(chat_id: int, user: User):
     rules_text += f"• При нарушении правил - блокировка аккаунта\n\n"
     
     rules_text += f"*6. ТЕХНИЧЕСКАЯ ПОДДЕРЖКА*\n"
-    rules_text += f"@eriksson_sop - администратор\n\n"
+    rules_text += f"@Sigicara - техническая поддержка\n\n"
     
     rules_text += f"⚖️ *Используя сервис, вы подтверждаете согласие с данными правилами.*"
     
