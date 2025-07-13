@@ -176,8 +176,8 @@ def create_balance_menu():
     return {
         "inline_keyboard": [
             [
-                {"text": "💰 Пополнить через криптобот", "callback_data": "pay_crypto"},
-                {"text": "⭐ Пополнить звездами", "callback_data": "pay_stars"}
+                {"text": "🤖 Криптобот", "callback_data": "pay_crypto"},
+                {"text": "⭐ Звезды", "callback_data": "pay_stars"}
             ],
             [
                 {"text": "🛒 Купить 1 поиск (25₽)", "callback_data": "buy_single_search"}
